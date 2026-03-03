@@ -5,6 +5,17 @@ require("dotenv").config();
 
 const Property = require("./models/Property");
 
+const vision = require("@google-cloud/vision");
+const multer = require("multer");
+
+// Configure multer (store file in memory)
+const upload = multer({ storage: multer.memoryStorage() });
+
+// Parse Google credentials from environment
+const visionClient = new vision.ImageAnnotatorClient({
+  credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS)
+});
+
 const app = express();
 
 app.use(cors());
@@ -29,7 +40,9 @@ app.post("/whatsapp-entry", async (req, res) => {
       return res.status(400).json({ error: "Message is required" });
     }
 
+    // -------------------------------
     // Extract phone number (10 digits)
+    // -------------------------------
     const phoneMatch = message.match(/\b\d{10}\b/);
     const contactPhone = phoneMatch ? phoneMatch[0] : "";
 
@@ -43,11 +56,15 @@ app.post("/whatsapp-entry", async (req, res) => {
       }
     }
 
+    // -------------------------------
     // Extract BHK
+    // -------------------------------
     const bhkMatch = message.match(/(\d)\s*BHK/i);
     const bedrooms = bhkMatch ? parseInt(bhkMatch[1]) : "";
 
+    // -------------------------------
     // Extract Price
+    // -------------------------------
     const priceMatch = message.match(/(\d+(\.\d+)?)\s*(L|Lakh|lac|Cr|crore)/i);
     let price = "";
     if (priceMatch) {
@@ -59,7 +76,9 @@ app.post("/whatsapp-entry", async (req, res) => {
       }
     }
 
+    // -------------------------------
     // Detect Property Type
+    // -------------------------------
     let propertyTypeName = "";
     if (/builder\s*floor/i.test(message)) {
       propertyTypeName = "Builder Floor";
@@ -69,12 +88,33 @@ app.post("/whatsapp-entry", async (req, res) => {
       propertyTypeName = "Kothi";
     }
 
+    // -------------------------------
+    // Detect Purpose (Sale / Rent)
+    // -------------------------------
+    let purpose = "";
+    if (/rent/i.test(message)) {
+      purpose = "Rent";
+    } else if (/sale|sell/i.test(message)) {
+      purpose = "Sale";
+    }
+
+    // -------------------------------
     // Detect urgency
+    // -------------------------------
     const urgency = message.toLowerCase().includes("urgent") ? "Yes" : "";
 
+    // -------------------------------
+    // Extract Super Area
+    // -------------------------------
+    const areaMatch = message.match(/(\d+(\.\d+)?)\s*(sq\s*ft|sqft|ft|mtr|meter)/i);
+    const superArea = areaMatch ? areaMatch[1] : "";
+
+    // -------------------------------
+    // Create Entry
+    // -------------------------------
     const newEntry = new Property({
       propertyTypeName,
-      purpose: "", // can improve later
+      purpose,
       price,
       address: "",
       contactName: "",
@@ -86,7 +126,7 @@ app.post("/whatsapp-entry", async (req, res) => {
       parking: "",
       facing: "",
       urgency,
-      superArea: "",
+      superArea,
       source: "whatsapp",
       rawText: message
     });
@@ -104,6 +144,31 @@ app.post("/whatsapp-entry", async (req, res) => {
   }
 });
 
+// OCR Image Upload Endpoint
+app.post("/ocr-upload", upload.single("image"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "Image file is required" });
+    }
+
+    // Send image buffer to Google Vision
+    const [result] = await visionClient.textDetection({
+      image: { content: req.file.buffer }
+    });
+
+    const detections = result.textAnnotations;
+    const extractedText = detections.length > 0 ? detections[0].description : "";
+
+    res.json({
+      message: "OCR successful",
+      extractedText
+    });
+
+  } catch (error) {
+    console.error("OCR Error:", error);
+    res.status(500).json({ error: "OCR failed" });
+  }
+});
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
